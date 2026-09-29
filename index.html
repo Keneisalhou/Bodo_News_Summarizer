@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bodo Extractive Text Summarizer</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        body {
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 30px;
+        }
+        .container {
+            max-width: 950px;
+            margin: 0 auto;
+            background: #ffffff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+        }
+        h2 {
+            color: #1a252f;
+            margin-top: 0;
+            margin-bottom: 8px;
+        }
+        p.subtitle {
+            color: #6c757d;
+            font-size: 14px;
+            margin-bottom: 25px;
+        }
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 20px;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        label {
+            font-weight: 600;
+            color: #495057;
+        }
+        select, button {
+            padding: 10px 18px;
+            font-size: 15px;
+            border-radius: 6px;
+        }
+        select {
+            border: 1px solid #ced4da;
+            background: white;
+        }
+        button {
+            background-color: #0d6efd;
+            color: white;
+            border: none;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background-color: #0b5ed7;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .box-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #343a40;
+        }
+        textarea {
+            width: 100%;
+            height: 350px;
+            padding: 14px;
+            border: 1px solid #ced4da;
+            border-radius: 8px;
+            font-size: 16px;
+            line-height: 1.6;
+            resize: vertical;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #0d6efd;
+            box-shadow: 0 0 0 3px rgba(13,110,253,0.15);
+        }
+        #output {
+            background-color: #fafafa;
+        }
+        .status-badge {
+            font-size: 13px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-weight: bold;
+        }
+        .status-loading { background: #fff3cd; color: #856404; }
+        .status-ready { background: #d1e7dd; color: #0f5132; }
+        .status-error { background: #f8d7da; color: #842029; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Bodo News Summarizer</h2>
+    <p class="subtitle">Pure Client-Side Extractive Text Summarization Engine</p>
+
+    <div class="controls">
+        <label for="ratio">Compression Level:</label>
+        <select id="ratio">
+            <option value="0.2">20% of Article</option>
+            <option value="0.3" selected>30% of Article</option>
+            <option value="0.5">50% of Article</option>
+        </select>
+
+        <button onclick="generateSummary()">Summarize Article</button>
+        <span id="modelStatus" class="status-badge status-loading">Loading weights...</span>
+    </div>
+
+    <div class="grid">
+        <div>
+            <div class="box-title">Original News Article (Devanagari)</div>
+            <textarea id="articleInput" placeholder="लिरथाय बेयाव होनागौ..."></textarea>
+        </div>
+        <div>
+            <div class="box-title">Generated Summary</div>
+            <textarea id="output" readonly placeholder="सुंदो लिरबिं बेयाव नुजागोन..."></textarea>
+        </div>
+    </div>
+</div>
+
+<script>
+let tfidfWeights = {};
+let isModelReady = false;
+
+// 1. Load the JSON weight matrix automatically on page start
+fetch('tfidf_model.json')
+    .then(response => {
+        if (!response.ok) throw new Error('Could not find tfidf_model.json');
+        return response.json();
+    })
+    .then(data => {
+        tfidfWeights = data;
+        isModelReady = true;
+        const status = document.getElementById('modelStatus');
+        status.textContent = 'Model Ready';
+        status.className = 'status-badge status-ready';
+    })
+    .catch(err => {
+        console.error(err);
+        const status = document.getElementById('modelStatus');
+        status.textContent = 'Error loading json';
+        status.className = 'status-badge status-error';
+    });
+
+// 2. Helper: Clean text matching Python regex logic
+function cleanText(text) {
+    if (!text) return "";
+    // Keep Devanagari range (0900-097F), digits, danda (।), and whitespace
+    let cleaned = text.replace(/[^ऀ-ॿ0-9।\s]/g, ' ');
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    return cleaned;
+}
+
+// 3. Helper: Split sentences by Devanagari danda
+function splitSentences(text) {
+    if (!text) return [];
+    let parts = text.split('।');
+    return parts.map(s => s.trim()).filter(s => s.length > 0);
+}
+
+// 4. Pure JS TF-IDF Sentence Scoring Algorithm
+function summarizeText(rawText, ratio = 0.3) {
+    const cleaned = cleanText(rawText);
+    const sentences = splitSentences(cleaned);
+    const n = sentences.length;
+
+    if (n === 0) return "";
+    if (n <= 2) return sentences.join('। ') + ' ।';
+
+    let numSelect = Math.max(1, Math.ceil(ratio * n));
+    numSelect = Math.min(numSelect, n);
+
+    // Calculate sentence scores based on trained IDF vocabulary
+    let sentenceScores = sentences.map((sentence, idx) => {
+        // Tokenize sentence into simple words
+        let words = sentence.toLowerCase().split(/\s+/);
+        let score = 0;
+
+        words.forEach(word => {
+            if (tfidfWeights.hasOwnProperty(word)) {
+                score += tfidfWeights[word];
+            }
+        });
+
+        return { index: idx, score: score, text: sentence };
+    });
+
+    // Sort by highest score to select top sentences
+    let sortedByScore = [...sentenceScores].sort((a, b) => b.score - a.score);
+    let selected = sortedByScore.slice(0, numSelect);
+
+    // Re-sort selected sentences chronologically by original position
+    selected.sort((a, b) => a.index - b.index);
+
+    // Return joined summary
+    return selected.map(s => s.text).join('। ') + ' ।';
+}
+
+// 5. Trigger Handler
+function generateSummary() {
+    if (!isModelReady) {
+        alert('Please wait for the model weights to load.');
+        return;
+    }
+
+    const inputArea = document.getElementById('articleInput').value;
+    const ratio = parseFloat(document.getElementById('ratio').value);
+    const outputArea = document.getElementById('output');
+
+    if (!inputArea.trim()) {
+        alert('Please paste a Bodo article first.');
+        return;
+    }
+
+    const summary = summarizeText(inputArea, ratio);
+    outputArea.value = summary;
+}
+</script>
+
+</body>
+</html>
